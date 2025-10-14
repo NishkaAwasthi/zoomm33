@@ -1,0 +1,987 @@
+{
+  "name": "F1 Weekly Agent",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -976,
+        2012
+      ],
+      "id": "82c7288e-4986-48e5-9ea1-fbc5f14aea07",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "efd0578a-02e6-44a5-9d6c-a5acc30226c7",
+              "name": "email_to",
+              "value": "nishkaawasthi@gmail.com",
+              "type": "string"
+            },
+            {
+              "id": "46eff0ff-48a0-48c8-b0bd-0e8a59adc9a0",
+              "name": "timezone",
+              "value": "America/Los_Angeles",
+              "type": "string"
+            },
+            {
+              "id": "a85b8e3e-cda9-4941-84cb-c5fc51d5e92e",
+              "name": "favorites",
+              "value": "[\"VER\", \"SAI\", \"HAM\", \"PIA\", \"NOR\"]",
+              "type": "array"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -752,
+        740
+      ],
+      "id": "898e0c7d-6452-434d-9374-1c5fd055b2d2",
+      "name": "setConfig"
+    },
+    {
+      "parameters": {
+        "url": "https://better-f1-calendar.vercel.app/api/calendar.ics",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -528,
+        740
+      ],
+      "id": "8756c66d-85bf-4300-9ec5-adee7634cc27",
+      "name": "getRaceInfo"
+    },
+    {
+      "parameters": {
+        "calendar": {
+          "__rl": true,
+          "value": "32b070ba12e4fec5174cc623583eacb9fcd41ea5f5d7cfd39c94e2e2d938e5d3@group.calendar.google.com",
+          "mode": "list",
+          "cachedResultName": "F1 2025"
+        },
+        "start": "={{$json[\"startUtc\"]}}",
+        "end": "={{$json[\"endUtc\"]}}",
+        "additionalFields": {
+          "location": "={{$json[\"location\"]}}",
+          "summary": "={{$json[\"gp\"]}}: {{$json[\"sessionType\"]}}"
+        }
+      },
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        -80,
+        112
+      ],
+      "id": "ec8d92dd-2a75-4fc4-8f1f-5c9cea268850",
+      "name": "addEvents",
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "m7ylqcpSjYO8Efkz",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// --- ICS → Next GP weekend only ---\n\nconst raw = $json.data || $json.body || '';\n\nfunction unfurl(str) {\n  return str.replace(/\\r?\\n[ \\t]/g, '');\n}\n\nfunction getProp(block, key) {\n  const re = new RegExp(`${key}(?:;[^:]*)?:(.*?)(\\\\r?\\\\n|$)`);\n  const m = block.match(re);\n  return m ? m[1].trim() : '';\n}\n\nfunction parseIcs(str) {\n  const txt = unfurl(str);\n  const blocks = txt.split('BEGIN:VEVENT').slice(1);\n  const out = [];\n  for (const b of blocks) {\n    const summary = getProp(b, 'SUMMARY');\n    const dtstart = getProp(b, 'DTSTART');\n    const dtend   = getProp(b, 'DTEND');\n    const location = getProp(b, 'LOCATION');\n    if (!summary || !dtstart) continue;\n\n    let gpTitle = summary, sessionType = '';\n    const m = summary.match(/^(.*?):\\s*(.*)$/);\n    if (m) {\n      gpTitle = m[1].trim();\n      sessionType = m[2].trim();\n    }\n    out.push({ gpTitle, sessionType, summary, dtstart, dtend, location });\n  }\n  return out;\n}\n\nfunction icsToIso(ics) {\n  if (!ics) return null;\n  const m = ics.match(/^(\\d{4})(\\d{2})(\\d{2})T(\\d{2})(\\d{2})(\\d{2})?Z$/);\n  if (!m) return null;\n  const [_, Y, M, D, h, mi, s] = m;\n  return `${Y}-${M}-${D}T${h}:${mi}:${s || '00'}Z`;\n}\n\nfunction toLocal(iso, tz = 'America/Los_Angeles') {\n  if (!iso) return '';\n  const d = new Date(iso);\n  const parts = new Intl.DateTimeFormat('en-CA', {\n    timeZone: tz,\n    year: 'numeric', month: '2-digit', day: '2-digit',\n    hour: '2-digit', minute: '2-digit', hour12: false\n  }).formatToParts(d);\n  const get = (t) => parts.find(x => x.type === t)?.value;\n  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}`;\n}\n\nconst tz = 'America/Los_Angeles';\nconst now = new Date();\n\n// 1) parse everything\nconst all = parseIcs(raw).map(e => ({\n  ...e,\n  startUtc: icsToIso(e.dtstart),\n  endUtc:   icsToIso(e.dtend)\n})).filter(e => e.startUtc);\n\n// 2) sort\nall.sort((a,b) => new Date(a.startUtc) - new Date(b.startUtc));\n\n// 3) find the next Race\nconst nextRace = all.find(e =>\n  /(^|\\b)race(\\b|$)/i.test(e.sessionType) &&\n  new Date(e.startUtc) > now\n);\nif (!nextRace) {\n  return [{ json: { message: 'No upcoming race found' } }];\n}\n\n// 4) filter all sessions for that GP\nconst gpTitle = nextRace.gpTitle;\nconst gpEvents = all.filter(e => e.gpTitle === gpTitle);\n\n// 5) return ALL sessions of the weekend, in order\ngpEvents.sort((a,b) => new Date(a.startUtc) - new Date(b.startUtc));\n\nreturn gpEvents.map(e => ({\n  json: {\n    gp: gpTitle,\n    sessionType: e.sessionType || e.summary,\n    location: e.location || '',\n    startUtc: e.startUtc,\n    endUtc: e.endUtc,\n    startLocal: toLocal(e.startUtc, tz),\n    endLocal: toLocal(e.endUtc, tz)\n  }\n}));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -304,
+        740
+      ],
+      "id": "a7ab1166-9ed8-4017-89cf-a87891feddd2",
+      "name": "getUpcomingRaceJSON",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "url": "=https://f1-news1.p.rapidapi.com/f1news",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-RapidAPI-Key",
+              "value": "fbf330a2dcmsh0c07e79882f6846p10634cjsna4d91b1d71b8"
+            },
+            {
+              "name": "X-RapidAPI-Host",
+              "value": "f1-news1.p.rapidapi.com"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -80,
+        304
+      ],
+      "id": "1393bb13-8bd9-41f1-8917-b0ee86aafbda",
+      "name": "getF1News",
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// get all input items\nconst allItems = $input.all();\n\n// turn them into an array of JSON objects\nconst sessions = allItems.map(i => i.json);\n\n// return one item that holds the sessions array\nreturn [\n  {\n    json: {\n      sessions\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        144,
+        604
+      ],
+      "id": "ffa354e9-110e-442b-b5e9-d8810d4db149",
+      "name": "aggregateSessions"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{$(\"setConfig\").first().json.email_to}}",
+        "subject": "=🏎️ {{$json.sessions[0].gp}} Weekend Preview",
+        "message": "={{$json.text}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1872,
+        868
+      ],
+      "id": "6697ee00-c2bd-4a82-a9f9-8929b6b6f0bf",
+      "name": "sendEmail",
+      "webhookId": "df24e872-3781-4752-b274-5306abccf32e",
+      "executeOnce": true,
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "at0hxWyQ7O0XRFyA",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list",
+          "cachedResultName": "gpt-4o"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        440,
+        1060
+      ],
+      "id": "9fa1f893-a736-462c-a547-ae2dcfc5a5e1",
+      "name": "OpenAI Chat Model2",
+      "credentials": {
+        "openAiApi": {
+          "id": "gWOdt6gOXsL1h3bl",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://f1-live-pulse.p.rapidapi.com/timingData",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-rapidapi-host",
+              "value": "f1-live-pulse.p.rapidapi.com"
+            },
+            {
+              "name": "x-rapidapi-key",
+              "value": "fbf330a2dcmsh0c07e79882f6846p10634cjsna4d91b1d71b8"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -80,
+        964
+      ],
+      "id": "57aae17a-01b7-4efa-bb71-c8d03c3322f9",
+      "name": "getRaceData"
+    },
+    {
+      "parameters": {
+        "url": "https://f1-live-pulse.p.rapidapi.com/driverPositions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-rapidapi-host",
+              "value": "f1-live-pulse.p.rapidapi.com"
+            },
+            {
+              "name": "x-rapidapi-key",
+              "value": "fbf330a2dcmsh0c07e79882f6846p10634cjsna4d91b1d71b8"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        144,
+        1200
+      ],
+      "id": "555bd3c0-b4a3-4389-852e-56b38caac7e4",
+      "name": "getDriverStandings"
+    },
+    {
+      "parameters": {
+        "url": "https://f1-live-pulse.p.rapidapi.com/fiaDocuments",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-rapidapi-host",
+              "value": "f1-live-pulse.p.rapidapi.com"
+            },
+            {
+              "name": "x-rapidapi-key",
+              "value": "fbf330a2dcmsh0c07e79882f6846p10634cjsna4d91b1d71b8"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -80,
+        772
+      ],
+      "id": "2b05a56c-5a4d-432b-9534-5854d0da04db",
+      "name": "getWeather"
+    },
+    {
+      "parameters": {
+        "url": "https://f1-live-pulse.p.rapidapi.com/teamRadio?tla=VER' ",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-rapidapi-host",
+              "value": "f1-live-pulse.p.rapidapi.com"
+            },
+            {
+              "name": "x-rapidapi-key",
+              "value": "fbf330a2dcmsh0c07e79882f6846p10634cjsna4d91b1d71b8"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        432,
+        1788
+      ],
+      "id": "80fa2035-8316-42ed-a884-707772e33a05",
+      "name": "getTeamStandings",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "url": "https://f1-live-pulse.p.rapidapi.com/championshipPrediction",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-rapidapi-host",
+              "value": "f1-live-pulse.p.rapidapi.com"
+            },
+            {
+              "name": "x-rapidapi-key",
+              "value": "fbf330a2dcmsh0c07e79882f6846p10634cjsna4d91b1d71b8"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        144,
+        1452
+      ],
+      "id": "653c558e-3f6c-4da0-84a3-7b14732f18bc",
+      "name": "getWDC"
+    },
+    {
+      "parameters": {
+        "url": "https://f1-live-pulse.p.rapidapi.com/pitStops?tla=VER' ",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-rapidapi-host",
+              "value": "f1-live-pulse.p.rapidapi.com"
+            },
+            {
+              "name": "x-rapidapi-key",
+              "value": "fbf330a2dcmsh0c07e79882f6846p10634cjsna4d91b1d71b8"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        144,
+        1644
+      ],
+      "id": "a7b2ef27-d174-47eb-a5f3-7834ec759080",
+      "name": "getStrategyInsights"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are an experienced Formula 1 pundit writing a short pre-race briefing for passionate F1 fans.\n\nUse the following inputs:\n- Race information: {{$json[\"getRaceData\"]}}\n- Weather information: {{$json[\"getWeather\"]}}\n\nSummarize the key details for the upcoming Grand Prix in under 100 words.\n\nInclude:\n• The race name and circuit location  \n• Key session timings (if available)  \n• Expected weather conditions and how they might impact the race  \n\nWrite with insight and personality — the tone of a seasoned F1 analyst speaking to engaged fans. Avoid generic phrasing. Sound confident, concise, and slightly opinionated, as if previewing the weekend on Sky Sports F1.\n",
+        "hasOutputParser": true,
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.7,
+      "position": [
+        368,
+        836
+      ],
+      "id": "fd854b04-5b6b-4601-a157-370bcf7195bc",
+      "name": "Summarize Race Data"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list",
+          "cachedResultName": "gpt-4o"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        792,
+        1844
+      ],
+      "id": "b97d9015-3b40-40fa-9a9f-73744a520489",
+      "name": "OpenAI Chat Model",
+      "credentials": {
+        "openAiApi": {
+          "id": "gWOdt6gOXsL1h3bl",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are an experienced Formula 1 pundit analyzing pre-race data.\n\nUse the following inputs:\n- Driver standings: {{$json[\"getDriverStandings\"]}}\n- Championship status: {{$json[\"getWDC\"]}}\n- Strategy insights: {{$json[\"getStrategyInsights\"]}}\n- Race Info: {{$json[\"getRaceInfo\"]}}\n\nPredict which driver is most likely to win the upcoming Grand Prix.\nDiscuss how close Max Verstappen is to mathematically securing the title.\nAdd one sentence about how team strategy or weather might influence the result.\n\nKeep it under 100 words, analytical yet conversational.\n\nAdd in an extra 50 words specifically telling us about Max Verstappen and his likelihood for WDC. How many points away he is, and what he needs to score at minimum.\n",
+        "hasOutputParser": true,
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.7,
+      "position": [
+        720,
+        1620
+      ],
+      "id": "7f3c19ea-f315-4934-8697-adeaaa1a2a37",
+      "name": "Predict Race Outcome"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list",
+          "cachedResultName": "gpt-4o"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        792,
+        436
+      ],
+      "id": "0a33d930-46cd-47d0-b638-4263da64fae8",
+      "name": "OpenAI Chat Model3",
+      "credentials": {
+        "openAiApi": {
+          "id": "gWOdt6gOXsL1h3bl",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $json.F1News || [];   // unwrap the array\n\nconst news = raw.map(n => ({\n  title: n.title,\n  link: n.link,\n  description: n.description,\n  pubDate: n.pubDate,\n  imageURL: n.imageURL || \"\"\n}));\n\nreturn [{\n  json: { news }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        144,
+        304
+      ],
+      "id": "efed2829-a502-45e2-b272-04dc907aa26d",
+      "name": "formatF1News"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are an F1 journalist summarizing this week's headlines.\n\nInput: {{$json[\"formatF1News\"]}}\n\nWrite a concise, 3-sentence digest highlighting major stories about drivers, team upgrades, or controversies.\nSound like a commentator recapping pre-race buzz.\n",
+        "hasOutputParser": true,
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.7,
+      "position": [
+        720,
+        212
+      ],
+      "id": "9bc03527-6a10-4f63-9fa0-af4ef7f6b469",
+      "name": "Summarize F1 News"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list",
+          "cachedResultName": "gpt-4o"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        1592,
+        1092
+      ],
+      "id": "7dadcb7b-bc91-4bdb-850d-df9bdfadd034",
+      "name": "OpenAI Chat Model4",
+      "credentials": {
+        "openAiApi": {
+          "id": "gWOdt6gOXsL1h3bl",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are an award-winning F1 journalist and designer producing a professional, visually appealing Formula 1 weekend newsletter for Gmail.\n\nThe input below is JSON text containing merged race data, weather, sessions, car upgrades, strategy insights, standings, and news.\nUse all relevant information — even subtle details — to write the newsletter.\n\nInput: {{$json[\"formattedInput\"]}}\n\nWrite a rich, engaging Formula 1 weekend email in **HTML**.  \nOutput valid inline-styled HTML optimized for Gmail (no external CSS).  \nKeep the total length around 450–500 words.\n\nStructure:\n1. **Hero Header**\n   - Grand Prix name (large, bold, with team-color accent bar)\n   - Subheader: location + one-line teaser about the weekend’s drama\n   - Optional banner emoji 🏎️ or small SVG-style accent (if model supports it)\n\n2. **📅 Weekend Schedule**\n   - Two-column or full-width table with elegant styling:\n     - Use alternating row colors (#ffffff / #f9f9f9)\n     - Rounded corners and soft drop shadow\n     - Columns: Session | Start | End\n     - Format times like “Fri, Oct 18, 10:30 AM PDT”\n     - Use subtle F1 red (#e10600) for headings\n\n3. **🌤 Weather & Strategy Outlook**\n   - Stylish info box (<div> with light gray background and slight shadow)\n   - Mention temperature range, rain probability, and any tire or fuel strategy implications.\n   - Include witty commentary (“High temps could spell trouble for tire degradation…”)\n\n4. **🚗 Team & Car Updates**\n   - Section with mini team highlights.\n   - Summarize car upgrade news, aerodynamic tweaks, or reliability issues.\n   - Add small team icons if data exists, or structured text bullets for each top team.\n\n5. **📊 Insights & Standings**\n   - Include a horizontal divider line (#e10600, 2px)\n   - Quick recap of driver and constructor standings, rivalries, and key stats.\n   - 🏆 “Last 3 Winners” list  \n   - 💡 “Quick Stat” — any trivia or interesting data point\n\n6. **📰 Latest F1 Headlines**\n   - Display 3–5 short blurbs (title + 1 sentence each) with clickable red links.\n   - Use a grid or card-style layout if possible (rounded white boxes with subtle border).\n\n7. **Closing Note**\n   - Centered text:\n     “✅ All sessions are already in your Google Calendar — Generated by your F1 Agent 🤖”\n   - Add a faint footer divider line and small-print tagline.\n\nStyling:\n- Font: Helvetica, Arial, sans-serif  \n- Header color: #e10600  \n- Text color: #222  \n- Background: #fafafa  \n- Rounded sections (border-radius: 12px) with soft shadows  \n- Proper spacing (margin-bottom: 20px)  \n- Use emojis selectively for personality (🏎️, 🌤, 📰, 🏆, 🚗)  \n- Layout must look modern, clean, and balanced — like an official F1 newsletter.\n\nTone:\n- Confident, witty, data-driven — like a seasoned paddock reporter with design flair.\n- Blend stats, weather, and upgrades into a cohesive, flowing story.\n- Ensure every section feels part of a premium editorial experience.\n",
+        "hasOutputParser": true,
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.7,
+      "position": [
+        1520,
+        868
+      ],
+      "id": "7309c4c2-b652-4b35-987b-f851ca9a954f",
+      "name": "Write Email",
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                4,
+                5,
+                6
+              ]
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -976,
+        740
+      ],
+      "id": "5a492360-c597-4681-b959-70c7609c250a",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "numberInputs": 3
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        432,
+        1436
+      ],
+      "id": "b2cdcfbf-2f38-4a9a-8fca-434fe25f4bdd",
+      "name": "Merge1"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        144,
+        836
+      ],
+      "id": "6fa1c99a-a4c9-45e1-9ec3-fefd969df892",
+      "name": "Merge2"
+    },
+    {
+      "parameters": {
+        "numberInputs": 5
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1072,
+        820
+      ],
+      "id": "16cd9ceb-8c64-49b0-b52d-be06f755dea8",
+      "name": "Merge3"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        432,
+        212
+      ],
+      "id": "900fffbe-8f4c-4ce4-9f82-5f6d9f8a777a",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "amount": 1,
+        "unit": "minutes"
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -80,
+        1420
+      ],
+      "id": "876bbcf4-3fed-4962-a449-7632ac3b1fa9",
+      "name": "Wait",
+      "webhookId": "c1264ac2-6a1a-46d4-b3e6-0121d19d0b22"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [\n  {\n    json: {\n      formattedInput: JSON.stringify($input.all().map(i => i.json), null, 2)\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1296,
+        868
+      ],
+      "id": "db86acc3-8f4b-4742-8947-7d5be00ea384",
+      "name": "Code in JavaScript",
+      "executeOnce": true
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        []
+      ]
+    },
+    "setConfig": {
+      "main": [
+        [
+          {
+            "node": "getRaceInfo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getRaceInfo": {
+      "main": [
+        [
+          {
+            "node": "getUpcomingRaceJSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getUpcomingRaceJSON": {
+      "main": [
+        [
+          {
+            "node": "addEvents",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "getF1News",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "aggregateSessions",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "getWeather",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "getRaceData",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "getTeamStandings",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "addEvents": {
+      "main": [
+        []
+      ]
+    },
+    "getF1News": {
+      "main": [
+        [
+          {
+            "node": "formatF1News",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "aggregateSessions": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model2": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Summarize Race Data",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getWeather": {
+      "main": [
+        [
+          {
+            "node": "Merge2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getRaceData": {
+      "main": [
+        [
+          {
+            "node": "Merge2",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Predict Race Outcome",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getWDC": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "getTeamStandings": {
+      "main": [
+        [
+          {
+            "node": "Predict Race Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getDriverStandings": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge3",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "getStrategyInsights": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model3": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Summarize F1 News",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "formatF1News": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge3",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model4": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Write Email",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Email": {
+      "main": [
+        [
+          {
+            "node": "sendEmail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize F1 News": {
+      "main": [
+        [
+          {
+            "node": "Merge3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize Race Data": {
+      "main": [
+        [
+          {
+            "node": "Merge3",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Predict Race Outcome": {
+      "main": [
+        [
+          {
+            "node": "Merge3",
+            "type": "main",
+            "index": 4
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "setConfig",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge1": {
+      "main": [
+        [
+          {
+            "node": "Predict Race Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge2": {
+      "main": [
+        [
+          {
+            "node": "Summarize Race Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge3": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Summarize F1 News",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "getStrategyInsights",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "getWDC",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "getDriverStandings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Write Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "210bf7ec-be98-4dfc-81ff-60db3be220ba",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "5c97deb077cca57d5668b8a6166c00b98a1d53ef898c8d5ff8126ff7f12c39f5"
+  },
+  "id": "bdB9uoj0t9OMbw9Z",
+  "tags": []
+}
